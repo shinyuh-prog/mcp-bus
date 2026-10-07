@@ -36,25 +36,13 @@ export const NextBusArrivalTimings: React.FC<NextBusArrivalTimingsProps> = ({
   const [stopTabCode, setStopTabCode] = useState<string>('01012');
 
   // Live timer states
-  const [refreshCountdown, setRefreshCountdown] = useState<number>(30);
+  const [refreshCountdown, setRefreshCountdown] = useState<number>(20);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isEstimated, setIsEstimated] = useState(true);
   const [isSavedFavorite, setIsSavedFavorite] = useState(false);
   const [showRouteModal, setShowRouteModal] = useState(false);
-
-  // Keep state in sync if parent passed new props
-  useEffect(() => {
-    if (initialServiceNo) {
-      setSelectedServiceNo(initialServiceNo);
-    }
-  }, [initialServiceNo]);
-
-  useEffect(() => {
-    if (initialStopCode) {
-      setSelectedStopCode(initialStopCode);
-      setStopTabCode(initialStopCode);
-    }
-  }, [initialStopCode]);
+  const [apiHealthStatus, setApiHealthStatus] = useState<{ status: string; hasKey: boolean } | null>(null);
+  const [liveApiResponse, setLiveApiResponse] = useState<ServiceArrivals | null>(null);
 
   // Current route object
   const currentRoute: BusRoute = useMemo(() => {
@@ -70,6 +58,95 @@ export const NextBusArrivalTimings: React.FC<NextBusArrivalTimingsProps> = ({
       currentRoute.directions[0]
     );
   }, [currentRoute, selectedDirection]);
+
+  // Check /api/health status on mount
+  useEffect(() => {
+    fetch('/api/health')
+      .then((res) => res.json())
+      .then((data) => {
+        setApiHealthStatus({
+          status: data.status || 'ok',
+          hasKey: Boolean(data.config?.hasLtaAccountKey),
+        });
+      })
+      .catch(() => {
+        // Fallback gracefully
+        setApiHealthStatus({ status: 'ok', hasKey: false });
+      });
+  }, []);
+
+  // Fetch from LTA DataMall endpoint (/api/bus-arrival)
+  const fetchLtaArrivals = useCallback(async (stopCode: string, serviceNo?: string) => {
+    try {
+      let url = `/api/bus-arrival?BusStopCode=${encodeURIComponent(stopCode)}`;
+      if (serviceNo) {
+        url += `&ServiceNo=${encodeURIComponent(serviceNo)}`;
+      }
+      const res = await fetch(url);
+      if (!res.ok) return null;
+      const data = await res.json();
+      if (!data.Services || data.Services.length === 0) return null;
+
+      const targetSvc = data.Services[0];
+      const parseBus = (bus: any): any => {
+        if (!bus || !bus.EstimatedArrival) {
+          return {
+            estimatedMin: 15,
+            crowdLevel: 'limited',
+            busType: 'Double Deck',
+            wheelchairAccessible: true,
+          };
+        }
+        const diffMs = new Date(bus.EstimatedArrival).getTime() - Date.now();
+        const mins = Math.max(0, Math.round(diffMs / 60000));
+        const crowd =
+          bus.Load === 'SDA'
+            ? 'standing'
+            : bus.Load === 'LSD'
+            ? 'limited'
+            : 'seats';
+        const type =
+          bus.Type === 'SD'
+            ? 'Single Deck'
+            : bus.Type === 'BD'
+            ? 'Bendy'
+            : 'Double Deck';
+        return {
+          estimatedMin: mins,
+          crowdLevel: crowd,
+          busType: type,
+          wheelchairAccessible: bus.Feature === 'WAB',
+        };
+      };
+
+      const parsed: ServiceArrivals = {
+        serviceNo: targetSvc.ServiceNo || serviceNo || '147',
+        destination: activeDirectionData.destinationName,
+        operator: targetSvc.Operator === 'SBST' ? 'SBS Transit' : targetSvc.Operator || 'SBS Transit',
+        wheelchairAccessible: targetSvc.NextBus?.Feature === 'WAB' || true,
+        nextBus: parseBus(targetSvc.NextBus),
+        secondBus: parseBus(targetSvc.NextBus2),
+        thirdBus: parseBus(targetSvc.NextBus3),
+      };
+      return parsed;
+    } catch {
+      return null;
+    }
+  }, [activeDirectionData.destinationName]);
+
+  // Keep state in sync if parent passed new props
+  useEffect(() => {
+    if (initialServiceNo) {
+      setSelectedServiceNo(initialServiceNo);
+    }
+  }, [initialServiceNo]);
+
+  useEffect(() => {
+    if (initialStopCode) {
+      setSelectedStopCode(initialStopCode);
+      setStopTabCode(initialStopCode);
+    }
+  }, [initialStopCode]);
 
   // If the currently selected stop is not in the active direction, pick the first valid stop
   useEffect(() => {
@@ -91,26 +168,30 @@ export const NextBusArrivalTimings: React.FC<NextBusArrivalTimingsProps> = ({
     );
   }, [activeDirectionData, selectedStopCode]);
 
-  // Countdown timer effect
+  // Countdown timer effect (LTA DataMall refreshes every 20 seconds)
   useEffect(() => {
     const timer = setInterval(() => {
       setRefreshCountdown((prev) => {
         if (prev <= 1) {
-          return 30;
+          fetchLtaArrivals(selectedStopCode, selectedServiceNo).then((res) => {
+            if (res) setLiveApiResponse(res);
+          });
+          return 20;
         }
         return prev - 1;
       });
     }, 1000);
     return () => clearInterval(timer);
-  }, []);
+  }, [fetchLtaArrivals, selectedStopCode, selectedServiceNo]);
 
   const handleRefresh = useCallback(() => {
     setIsRefreshing(true);
-    setTimeout(() => {
+    fetchLtaArrivals(selectedStopCode, selectedServiceNo).then((res) => {
+      if (res) setLiveApiResponse(res);
       setIsRefreshing(false);
-      setRefreshCountdown(30);
-    }, 600);
-  }, []);
+      setRefreshCountdown(20);
+    });
+  }, [fetchLtaArrivals, selectedStopCode, selectedServiceNo]);
 
   const handleEstimate = () => {
     setIsEstimated(true);
@@ -123,6 +204,11 @@ export const NextBusArrivalTimings: React.FC<NextBusArrivalTimingsProps> = ({
 
   // Generate arrivals data
   const currentArrivals: ServiceArrivals = useMemo(() => {
+    // If live API returned response for this service, use it!
+    if (liveApiResponse && liveApiResponse.serviceNo === selectedServiceNo) {
+      return liveApiResponse;
+    }
+
     // If it's Service 147 at Stop 01012 in Dir 1, return exact numbers from image
     if (
       selectedServiceNo === '147' &&
@@ -158,7 +244,7 @@ export const NextBusArrivalTimings: React.FC<NextBusArrivalTimingsProps> = ({
         wheelchairAccessible: true,
       },
     };
-  }, [selectedServiceNo, selectedStopCode, selectedDirection, activeDirectionData]);
+  }, [liveApiResponse, selectedServiceNo, selectedStopCode, selectedDirection, activeDirectionData]);
 
   // Multi-service arrivals for the "By Bus Stop No." tab
   const stopTabServices: ServiceArrivals[] = useMemo(() => {
@@ -630,6 +716,32 @@ export const NextBusArrivalTimings: React.FC<NextBusArrivalTimingsProps> = ({
             <strong className="text-slate-700 font-semibold">
               Land Transport Authority (LTA DataMall)
             </strong>
+          </div>
+
+          {/* API Health Monitor link / badge */}
+          <div className="pt-2 border-t border-slate-100 flex items-center justify-between text-[11px] text-slate-500">
+            <span className="flex items-center gap-1.5">
+              <span
+                className={`w-2 h-2 rounded-full ${
+                  apiHealthStatus?.hasKey ? 'bg-emerald-500' : 'bg-amber-400'
+                }`}
+              ></span>
+              <span>
+                LTA API:{' '}
+                {apiHealthStatus?.hasKey
+                  ? 'Live Account Key Connected'
+                  : 'Ready (Awaiting Vercel LTA_ACCOUNT_KEY)'}
+              </span>
+            </span>
+            <a
+              href="/api/health"
+              target="_blank"
+              rel="noreferrer"
+              className="text-[#702082] hover:underline font-medium inline-flex items-center gap-0.5"
+            >
+              <span>Monitor /api/health</span>
+              <span>↗</span>
+            </a>
           </div>
         </div>
       )}
