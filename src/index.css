@@ -1,0 +1,35 @@
+@import "tailwindcss";
+
+@layer base {
+  body {
+    background-color: #e5eff9;
+    color: #1e293b;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+}
+
+/* Sky gradient matching the image */
+.bg-sky-transit-gradient {
+  background: linear-gradient(
+    180deg,
+    #8abbee 0%,
+    #a8ccf8 22%,
+    #d1d5f5 48%,
+    #edd9d8 72%,
+    #f8ded2 88%,
+    #fbf2ec 100%
+  );
+}
+
+/* Accessibility font scale classes */
+.font-scale-normal {
+  font-size: 14px;
+}
+.font-scale-large {
+  font-size: 15.5px;
+}
+.font-scale-larger {
+  font-size: 17px;
+}

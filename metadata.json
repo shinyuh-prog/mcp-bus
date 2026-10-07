@@ -1,0 +1,6 @@
+{
+  "name": "SBS Transit NextBus Arrival Timings",
+  "description": "SBS Transit NextBus arrival timings portal with live bus estimations, routes, and travel updates.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
